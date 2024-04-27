@@ -2,11 +2,235 @@
 
 import struct
 
-def print_cmd(file, offset, out):
+class IntLiteralNode:
+    value: int
+    def __init__(self, value: int):
+        self.value = value
+    def __str__(self):
+        return hex(self.value)
+    def to_bytes(self):
+        raise RuntimeError('unimplemented')
+
+class StringLiteralNode:
+    value: str
+    def __init__(self, value: str):
+        self.value = value
+    def __str__(self):
+        # TODO: escape "s in the middle
+        return f'"{self.value}"'
+
+class FunctionNameNode:
+    ns: str
+    func: str
+    def __init__(self, ns: str, func: str):
+        self.ns = ns
+        self.func = func
+    def __str__(self):
+        return f"{self.ns}.{self.func}"
+class FunctionArgsNode:
+    def __init__(self, children):
+        self.children = children
+    def __str__(self):
+        l = len(self.children)
+        if l == 0:
+            return '()'
+        elif l == 1:
+            return f'({self.children[0]})'
+        else:
+            i = iter(self.children)
+            result = '(' + str(next(i))
+            for s in i:
+                result += ', '
+                result += str(s)
+            result += ')'
+            return result
+class FunctionCallNode:
+    def __init__(self, func, args):
+        self.func = func
+        self.args = args
+    def __str__(self):
+        return str(self.func) + str(self.args)
+
+class IntExprNode:
+    pass
+    
+class NegateNode(IntExprNode):
+    def __init__(self, expr: IntExprNode):
+        super().__init__()
+        self.expr = expr
+    def __str__(self):
+        return f'-({self.expr})'
+
+class BooleanExprNode:
+    pass
+
+class LogicalNotNode(BooleanExprNode):
+    def __init__(self, expr: BooleanExprNode):
+        super().__init__()
+        self.expr = expr
+    def __str__(self):
+        return f"not {self.expr}"
+
+class Cmd0FNode(BooleanExprNode):
+    def __init__(self, lhs: BooleanExprNode, rhs: BooleanExprNode):
+        super().__init__()
+        self.lhs = lhs
+        self.rhs = rhs
+    def __str__(self):
+        # Assuming this is logical and
+        return f"({self.lhs} and {self.rhs})"
+
+class Cmd12Node(BooleanExprNode):
+    def __init__(self, lhs: BooleanExprNode, rhs: BooleanExprNode):
+        super().__init__()
+        self.lhs = lhs
+        self.rhs = rhs
+    def __str__(self):
+        # Assuming this is logical or
+        return f"({self.lhs} or {self.rhs})"
+
+class Cmd1ANode(BooleanExprNode):
+    def __init__(self, lhs, rhs):
+        super().__init__()
+        self.lhs = lhs
+        self.rhs = rhs
+    def __str__(self):
+        return f"{self.lhs} == {self.rhs}"
+
+class Cmd1BNode(BooleanExprNode):
+    def __init__(self, lhs, rhs):
+        super().__init__()
+        self.lhs = lhs
+        self.rhs = rhs
+    def __str__(self):
+        return f"{self.lhs} != {self.rhs}"
+
+class Cmd15Node:
+    def __init__(self, lhs, rhs):
+        self.lhs = lhs
+        self.rhs = rhs
+    def __str__(self):
+        return f'({self.lhs} + {self.rhs})'
+
+class Cmd20Node:
+    def __init__(self, lhs, rhs):
+        self.lhs = lhs
+        self.rhs = rhs
+    def __str__(self):
+        return f'{self.lhs} = {self.rhs}'
+
+class StatementNode:
+    def is_branch(self):
+        return False
+
+class InitStatementNode(StatementNode):
+    def __init__(self):
+        super().__init__()
+    def __str__(self):
+        return '{'
+
+class EndStatementNode(StatementNode):
+    def __init__(self):
+        super().__init__()
+    def __str__(self):
+        return '}'
+
+class ExprStmtNode(StatementNode):
+    def __init__(self, expr):
+        super().__init__()
+        self.expr = expr
+    def __str__(self):
+        return f'{self.expr};'
+
+class SpeakerStatement(StatementNode):
+    def __init__(self, speaker: str):
+        super().__init__()
+        self.speaker = speaker
+    def __str__(self):
+        return f'[{self.speaker}]'
+
+class TextStatement(StatementNode):
+    def __init__(self, text: str):
+        super().__init__()
+        self.text = text
+    def __str__(self):
+        return f':: "{self.text}";'
+
+class Cmd2BStatement(StatementNode):
+    def __init__(self, arg):
+        super().__init__()
+        self.arg = arg
+    def __str__(self):
+        return f'cmd2B {hex(self.arg)}'
+
+class Cmd2CStatement(StatementNode):
+    def __init__(self, arg):
+        super().__init__()
+        self.arg = arg
+    def __str__(self):
+        return f'cmd2C {hex(self.arg)}'
+
+class Cmd30Statement(StatementNode):
+    def __init__(self):
+        super().__init__()
+    def __str__(self):
+        # return?
+        return f'cmd30;'
+
+class Cmd32Statement(StatementNode):
+    def __init__(self, arg):
+        super().__init__()
+        self.arg = arg
+    def __str__(self):
+        return f'cmd32 {hex(self.arg)}'
+
+class Cmd33Statement(StatementNode):
+    def __init__(self, arg: str):
+        super().__init__()
+        self.arg = arg
+    def __str__(self):
+        return f'cmd33 "{self.arg}"'
+
+class LabelMarker(StatementNode):
+    def __init__(self, name: str):
+        super().__init__()
+        self.name = name
+    def __str__(self):
+        return f'{self.name}:'
+
+class GotoStatement(StatementNode):
+    def __init__(self, branch_offset: int):
+        super().__init__()
+        self.branch_offset = branch_offset
+    def is_branch(self):
+        return True
+    def __str__(self):
+        return f'goto {self.branch_offset:+d};'
+
+class TrueGotoStatement(GotoStatement):
+    def __init__(self, condition: BooleanExprNode, branch_offset: int):
+        super().__init__(branch_offset)
+        self.condition = condition
+    def __str__(self):
+        return f'if ({self.condition}) goto {self.branch_offset:+d};'
+
+class FalseGotoStatement(GotoStatement):
+    def __init__(self, condition: BooleanExprNode, branch_offset: int):
+        super().__init__(branch_offset)
+        self.condition = condition
+    def __str__(self):
+        return f'unless ({self.condition}) goto {self.branch_offset:+d};'
+
+def print_cmd(file, offset, expr_stack, stmt_list):
     cmd = file[offset]
     match cmd:
+        case 0x01:
+            node = NegateNode(expr_stack[-1])
+            expr_stack[-1] = node
+            return offset + 1
         case 0x07:
-            out.write('not ')
+            node = LogicalNotNode(expr_stack[-1])
+            expr_stack[-1] = node
             return offset + 1
         case 0x0D:
             subcmd = file[offset+1]
@@ -20,86 +244,111 @@ def print_cmd(file, offset, out):
                         i += 1
                     num |= file[offset+2+i] << (7 * i)
                     i += 1
-                    out.write(hex(num) + ' ')
+                    expr_stack.append(IntLiteralNode(num))
                     return offset + 2 + i
                 case 0xF4:
                     (str1_id, str2_id) = struct.unpack_from('<HH', buffer=file, offset=offset+2)
                     if str2_id != 0:
-                        out.write(f'{get_string(str1_id)}.{get_string(str2_id)} ')
+                        expr_stack.append(FunctionNameNode(get_string(str1_id), get_string(str2_id)))
                     else:
-                        out.write(f'"{get_string(str1_id)}" ')
+                        expr_stack.append(StringLiteralNode(get_string(str1_id)))
                     return offset + 6
                 case _:
                     raise RuntimeError(f'unimplemented command 0D {subcmd:02X}')
         case 0x0F:
-            out.write('cmd0F ')
+            rhs = expr_stack.pop()
+            lhs = expr_stack.pop()
+            expr_stack.append(Cmd0FNode(lhs, rhs))
             return offset + 1
         case 0x12:
-            out.write('cmd12 ')
+            rhs = expr_stack.pop()
+            lhs = expr_stack.pop()
+            expr_stack.append(Cmd12Node(lhs, rhs))
             return offset + 1
         case 0x15:
-            out.write('cmd15 ')
+            rhs = expr_stack.pop()
+            lhs = expr_stack.pop()
+            expr_stack.append(Cmd15Node(lhs, rhs))
             return offset + 1
         case 0x1A:
-            out.write('cmd1A ')
+            rhs = expr_stack.pop()
+            lhs = expr_stack.pop()
+            expr_stack.append(Cmd1ANode(lhs, rhs))
             return offset + 1
         case 0x1B:
-            out.write('cmd1B ')
+            rhs = expr_stack.pop()
+            lhs = expr_stack.pop()
+            expr_stack.append(Cmd1BNode(lhs, rhs))
             return offset + 1
         case 0x20:
-            out.write('cmd20\n')
+            rhs = expr_stack.pop()
+            lhs = expr_stack.pop()
+            expr_stack.append(Cmd20Node(lhs, rhs))
             return offset + 1
         case 0x23:
-            out.write('args ')
+            expr_stack.append(FunctionArgsNode([]))
             return offset + 1
         case 0x24:
-            out.write('callfunc ')
+            i = len(expr_stack)
+            while not isinstance(expr_stack[i - 1], FunctionArgsNode):
+                i -= 1
+            expr_stack[i - 1].children = expr_stack[i:]
+            del expr_stack[i:]
+            args = expr_stack.pop()
+            func = expr_stack.pop()
+            expr_stack.append(FunctionCallNode(func, args))
             return offset + 1
         case 0x25:
-            out.write('init_stack_stuff\n')
+            stmt_list.append(InitStatementNode())
             return offset + 1
         case 0x26:
-            out.write('bye\n')
+            stmt_list.append(EndStatementNode())
             return offset + 1
         case 0x27:
-            out.write('drop\n')
+            stmt_list.append(ExprStmtNode(expr_stack.pop()))
             return offset + 1
         case 0x28:
             str_id = file[offset+1] | (file[offset+2] << 8)
-            out.write(f'speaker "{get_string(str_id)}"\n')
+            stmt_list.append(SpeakerStatement(get_string(str_id)))
             return offset + 3
         case 0x2B:
-            out.write(f'cmd2B {file[offset+1]:02X}\n')
+            stmt_list.append(Cmd2BStatement(file[offset+1]))
             return offset + 2
         case 0x2C:
-            out.write(f'cmd2C {file[offset+1]:02X}\n')
+            stmt_list.append(Cmd2CStatement(file[offset+1]))
             return offset + 2
         case 0x2F:
             str_id = file[offset+1] | (file[offset+2] << 8)
-            out.write(f'text "{get_string(str_id)}"\n')
+            stmt_list.append(TextStatement(get_string(str_id)))
             return offset + 3
         case 0x30:
-            out.write(f'cmd30\n')
+            stmt_list.append(Cmd30Statement())
             return offset + 1
         case 0x32:
             num = file[offset+1] | (file[offset+2] << 8)
-            out.write(f'cmd32 {num}\n')
+            stmt_list.append(Cmd32Statement(num))
+            return offset + 3
+        case 0x33:
+            str_id = file[offset+1] | (file[offset+2] << 8)
+            stmt_list.append(Cmd33Statement(get_string(str_id)))
             return offset + 3
         case 0x34:
             (str_id,) = struct.unpack_from('<H', buffer=file, offset=offset+1)
-            out.write(f'cmd34 "{get_string(str_id)}"\n')
+            stmt_list.append(LabelMarker(get_string(str_id)))
             return offset + 3
         case 0x35:
-            branch_offset = file[offset+1] | (file[offset+2] << 8)
-            out.write(f'branch {branch_offset:+d}\n')
+            (branch_offset,) = struct.unpack_from('<h', buffer=file, offset=offset+1)
+            stmt_list.append(GotoStatement(branch_offset))
             return offset + 3
         case 0x36:
-            branch_offset = file[offset+1] | (file[offset+2] << 8)
-            out.write(f'branch_if_false {branch_offset:+d}\n')
+            (branch_offset,) = struct.unpack_from('<h', buffer=file, offset=offset+1)
+            cond = expr_stack.pop()
+            stmt_list.append(TrueGotoStatement(cond, branch_offset))
             return offset + 3
         case 0x37:
-            branch_offset = file[offset+1] | (file[offset+2] << 8)
-            out.write(f'branch_if_true {branch_offset:+d}\n')
+            (branch_offset,) = struct.unpack_from('<h', buffer=file, offset=offset+1)
+            cond = expr_stack.pop()
+            stmt_list.append(FalseGotoStatement(cond, branch_offset))
             return offset + 3
         case _:
             raise RuntimeError(f'unimplemented command {cmd:02X}')
@@ -113,7 +362,7 @@ def get_string(id):
     return fsb[string_addr:string_end_addr].decode('mskanji')
 
 fsb = None
-with open('../999_files/root/scr/a01.fsb', 'rb') as f:
+with open('../999_jp_files/root/scr/a12d.fsb', 'rb') as f:
     fsb = f.read()
 
 assert fsb[0:3] == b'SIR'
@@ -153,12 +402,19 @@ while True:
 
 with open(filename, 'w', encoding='utf-8') as f:
     for entrypoint in entrypoints:
-        f.write(f'[[{entrypoint[1]}]]\n')
+        expr_stack = []
+        f.write(f'function {entrypoint[1]}\n')
         
         addr = entrypoint[0]
-        while fsb[addr] != 0x26:
-            addr = print_cmd(fsb, addr, f)
+        statements = []
+        expressions = []
+        while len(statements) == 0 or not isinstance(statements[-1], EndStatementNode):
+            addr = print_cmd(fsb, addr, expressions, statements)
         
-        f.write('bye\n\n')
+        for statement in statements:
+            f.write('\t')
+            f.write(str(statement))
+            f.write('\n')
+        f.write('\n')
 
     f.write('// done')
