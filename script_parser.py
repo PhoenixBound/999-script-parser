@@ -26,7 +26,10 @@ class FunctionNameNode:
         self.ns = ns
         self.func = func
     def __str__(self):
-        return f"{self.ns}.{self.func}"
+        if self.ns is not None:
+            return f"{self.ns}.{self.func}"
+        else:
+            return str(self.func)
 class FunctionArgsNode:
     def __init__(self, children):
         self.children = children
@@ -104,6 +107,15 @@ class Cmd1BNode(BooleanExprNode):
         self.rhs = rhs
     def __str__(self):
         return f"{self.lhs} != {self.rhs}"
+
+class Cmd1DNode(BooleanExprNode):
+    def __init__(self, lhs, rhs):
+        super().__init__()
+        self.lhs = lhs
+        self.rhs = rhs
+    def __str__(self):
+        # It's either >= or <=
+        return f"{self.lhs} cmpOp1D {self.rhs}"
 
 class Cmd15Node:
     def __init__(self, lhs, rhs):
@@ -246,6 +258,11 @@ def print_cmd(file, offset, expr_stack, stmt_list):
                     i += 1
                     expr_stack.append(IntLiteralNode(num))
                     return offset + 2 + i
+                case 0xF1:
+                    # TODO: Why would this be used instead of 0xF4? Specifically for `?System` functions?
+                    str_id = file[offset+2] | (file[offset+3] << 8)
+                    expr_stack.append(FunctionNameNode(None, get_string(str_id)))
+                    return offset + 4
                 case 0xF4:
                     (str1_id, str2_id) = struct.unpack_from('<HH', buffer=file, offset=offset+2)
                     if str2_id != 0:
@@ -279,6 +296,11 @@ def print_cmd(file, offset, expr_stack, stmt_list):
             rhs = expr_stack.pop()
             lhs = expr_stack.pop()
             expr_stack.append(Cmd1BNode(lhs, rhs))
+            return offset + 1
+        case 0x1D:
+            rhs = expr_stack.pop()
+            lhs = expr_stack.pop()
+            expr_stack.append(Cmd1DNode(lhs, rhs))
             return offset + 1
         case 0x20:
             rhs = expr_stack.pop()
@@ -362,7 +384,7 @@ def get_string(id):
     return fsb[string_addr:string_end_addr].decode('mskanji')
 
 fsb = None
-with open('../999_jp_files/root/scr/a12d.fsb', 'rb') as f:
+with open('../999_jp_files/root/scr/a11d.fsb', 'rb') as f:
     fsb = f.read()
 
 assert fsb[0:3] == b'SIR'
