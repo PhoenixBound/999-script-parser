@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import bisect
 import struct
 
 class IntLiteralNode:
@@ -241,6 +242,8 @@ class GotoStatement(StatementNode):
         self.branch_offset = branch_offset
     def is_branch(self):
         return True
+    def is_conditional_branch(self):
+        return False
     def __str__(self):
         return f'branch 0x{self.branch_offset:X};'
 
@@ -248,6 +251,8 @@ class TrueGotoStatement(GotoStatement):
     def __init__(self, condition: BooleanExprNode, branch_offset: int):
         super().__init__(branch_offset)
         self.condition = condition
+    def is_conditional_branch(self):
+        return True
     def __str__(self):
         return f'if ({self.condition}) branch 0x{self.branch_offset:X};'
 
@@ -255,6 +260,8 @@ class FalseGotoStatement(GotoStatement):
     def __init__(self, condition: BooleanExprNode, branch_offset: int):
         super().__init__(branch_offset)
         self.condition = condition
+    def is_conditional_branch(self):
+        return True
     def __str__(self):
         return f'unless ({self.condition}) branch 0x{self.branch_offset:X};'
 
@@ -263,6 +270,25 @@ class EndOfFileStatement(StatementNode):
         super().__init__()
     def __str__(self):
         return '/* EOF */'
+
+class Block:
+    def __init__(self):
+        self.statements = []
+        self.fallthrough_target = None
+        self.branch_target = None
+    
+    def append(self, stmt):
+        self.statements.append(stmt)
+        
+    def __str__(self):
+        s = f"Block(fallthrough_target={self.fallthrough_target}, branch_target={self.branch_target}, code='"
+        for stmt in self.statements:
+            t = str(stmt)
+            # Do any escaping here that seems appropriate
+            s += t
+            s += "\\n"
+        s += "')"
+        return s
 
 def print_cmd(file, offset, expr_stack, stmt_list):
     cmd = file[offset]
@@ -435,7 +461,7 @@ def get_string(id):
     return fsb[string_addr:string_end_addr].decode('mskanji')
 
 fsb = None
-with open('../999_jp_files/root/scr/b12.fsb', 'rb') as f:
+with open('../999_files/root/scr/b12.fsb', 'rb') as f:
     fsb = f.read()
 
 assert fsb[0:3] == b'SIR'
@@ -482,6 +508,63 @@ with open(filename, 'w', encoding='utf-8') as f:
     while len(statements) == 0 or not isinstance(statements[-1][1], EndOfFileStatement):
         addr = print_cmd(fsb, addr, expressions, statements)
     assert len(expressions) == 0
+    
+    
+    # Get the list of all the places where a node of the CFG starts
+    leaders = set(entrypoints)
+    for (i, (addr, stmt)) in enumerate(statements):
+        if stmt.is_branch():
+            leaders.add(stmt.branch_offset)
+            # The fallthrough to the next statement after a conditional branch also begins a node
+            if stmt.is_conditional_branch():
+                leaders.add(statements[i + 1][0])
+    leaders = list(leaders)
+    leaders.sort()
+    
+    # print(leaders)
+    # raise RuntimeError("that's all the leaders")
+
+    statements = dict(statements)
+    
+    # Create and populate blocks (control flow graph nodes) with statements
+    blocks = []
+    i = 0
+    statements_iter = iter(statements.items())
+    addr, stmt = next(statements_iter)
+    for i in range(len(leaders)):
+        block = Block()
+        assert addr == leaders[i]
+        while (i != len(leaders) - 1 and addr < leaders[i + 1]) or \
+              (i == len(leaders) - 1 and not isinstance(stmt, EndOfFileStatement)):
+            block.append(stmt)
+            addr, stmt = next(statements_iter)
+        # Add references to other blocks
+        last_stmt = block.statements[-1]
+        # Add fallthrough reference for blocks that end with normal statements and conditional branches
+        if (last_stmt.is_branch() and last_stmt.is_conditional_branch()) or \
+           (not last_stmt.is_branch() and not isinstance(last_stmt, EndStatementNode)):
+            block.fallthrough_target = i + 1
+            assert 0 <= block.fallthrough_target < len(leaders)
+        if last_stmt.is_branch():
+            block.branch_target = bisect.bisect_left(leaders, last_stmt.branch_offset)
+            assert leaders[block.branch_target] == last_stmt.branch_offset
+        blocks.append(block)
+        
+        # DEBUG
+        # print(f'BLOCK {i} (from addr {addr:04X})')
+        # print(block)
+        # input()
+        # END DEBUG
+    del addr
+    del stmt
+    del statements_iter
+    del i
+    
+    for (i, block) in enumerate(blocks):
+        print('BLOCK', i)
+        print(block)
+    
+    raise RuntimeError("We got this far")
     
     for statement in statements:
         func_name = entrypoints.get(statement[0])
