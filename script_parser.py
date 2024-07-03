@@ -2,13 +2,20 @@
 
 import bisect
 import struct
+from typing import *
+
+# Classes representing specific script commands in 999's bytecode engine
 
 class IntLiteralNode:
     value: int
     def __init__(self, value: int):
         self.value = value
     def __str__(self):
-        return hex(self.value)
+        v = self.value
+        if (v & 0x3FF) != 0:
+            return str(v / 0x400)
+        else:
+            return str(v // 0x400)
     def to_bytes(self):
         raise RuntimeError('unimplemented')
 
@@ -115,8 +122,7 @@ class Cmd1CNode(BooleanExprNode):
         self.lhs = lhs
         self.rhs = rhs
     def __str__(self):
-        # It's either >= or <=
-        return f"{self.lhs} cmpOp1C {self.rhs}"
+        return f"{self.lhs} <= {self.rhs}"
 
 class Cmd1DNode(BooleanExprNode):
     def __init__(self, lhs, rhs):
@@ -124,8 +130,16 @@ class Cmd1DNode(BooleanExprNode):
         self.lhs = lhs
         self.rhs = rhs
     def __str__(self):
-        # It's either >= or <=
-        return f"{self.lhs} cmpOp1D {self.rhs}"
+        return f"{self.lhs} >= {self.rhs}"
+
+class Cmd1ENode(BooleanExprNode):
+    def __init__(self, lhs, rhs):
+        super().__init__()
+        self.lhs = lhs
+        self.rhs = rhs
+    def __str__(self):
+        # It's either > or <
+        return f"{self.lhs} < {self.rhs}"
 
 class Cmd1FNode(BooleanExprNode):
     def __init__(self, lhs, rhs):
@@ -134,7 +148,7 @@ class Cmd1FNode(BooleanExprNode):
         self.rhs = rhs
     def __str__(self):
         # It's either > or <
-        return f"{self.lhs} cmpOp1F {self.rhs}"
+        return f"{self.lhs} > {self.rhs}"
 
 class Cmd15Node:
     def __init__(self, lhs, rhs):
@@ -199,35 +213,35 @@ class Cmd2BStatement(StatementNode):
         super().__init__()
         self.arg = arg
     def __str__(self):
-        return f'cmd2B {hex(self.arg)}'
+        return f'bundleStart {hex(self.arg)}'
 
 class Cmd2CStatement(StatementNode):
     def __init__(self, arg):
         super().__init__()
         self.arg = arg
     def __str__(self):
-        return f'cmd2C {hex(self.arg)}'
+        return f'bundleEnd {hex(self.arg)}'
 
 class Cmd30Statement(StatementNode):
     def __init__(self):
         super().__init__()
     def __str__(self):
         # return?
-        return f'cmd30;'
+        return f'return;'
 
 class Cmd32Statement(StatementNode):
     def __init__(self, arg):
         super().__init__()
         self.arg = arg
     def __str__(self):
-        return f'cmd32 {hex(self.arg)}'
+        return f'page {self.arg:04d}'
 
 class Cmd33Statement(StatementNode):
     def __init__(self, arg: str):
         super().__init__()
         self.arg = arg
     def __str__(self):
-        return f'cmd33 "{self.arg}"'
+        return f'goto "{self.arg}"'
 
 class LabelMarker(StatementNode):
     def __init__(self, name: str):
@@ -271,6 +285,54 @@ class EndOfFileStatement(StatementNode):
     def __str__(self):
         return '/* EOF */'
 
+# Classes representing higher level control flow stuff
+
+class LoopStatement(StatementNode):
+    """
+    Represents an infinite loop, like `loop` in Rust
+    """
+    def __init__(self, loop_body: List[StatementNode]):
+        super().__init__()
+        self.loop_body = loop_body
+
+    def __str__(self):
+        # Especially for higher-level nodes like this, this __str__ method does
+        # not have to match the exact syntax that the program will have in the
+        # end. It just has to be understandable for debugging.
+        s = 'loop { '
+        for stmt in loop_body:
+            s += str(stmt)
+            s += ' '
+        s += '}'
+        return s
+
+class IfStatement(StatementNode):
+    def __init__(self, condition: BooleanExprNode, if_body: List[StatementNode], \
+                 else_body: Optional[List[StatementNode]]):
+        super().__init__()
+        self.condition = condition
+        self.if_body = if_body
+        # There should be no difference in codegen between "else if" and "elif".
+        # But... there are switch statements, which look like ifs that end with
+        # a completely empty else block. I'll have to deal with those another
+        # time.
+        self.else_body = else_body
+
+    def __str__(self):
+        s = f'if ({self.condition}) {{ '
+        for stmt in if_body:
+            s += str(stmt)
+            s += ' '
+        if else_body is not None:
+            s += '} else { '
+            for stmt in else_body:
+                s += str(stmt)
+                s += ' '
+        s += '}'
+        return s
+
+# Control flow graph
+
 class Block:
     def __init__(self):
         self.statements = []
@@ -306,14 +368,25 @@ def print_cmd(file, offset, expr_stack, stmt_list):
             subcmd = file[offset+1]
             match subcmd:
                 case 0xF0:
-                    # TODO: limits for i exist
                     i = 0
                     num = 0
-                    while (file[offset+2+i] & 0x80) != 0:
+                    while (file[offset+2+i] & 0x80) != 0 and i < 4:
                         num |= (file[offset+2+i] & 0x7F) << (7 * i)
                         i += 1
                     num |= file[offset+2+i] << (7 * i)
                     i += 1
+                    
+                    sign = num & 1
+                    num >>= 1
+                    if sign != 0:
+                        raise RuntimeError(f"Negative integer literal commands *do* exist! At offset {offset:04X}")
+                        num = -num - 1
+                    # These are only errors because they'll make matching recompilation more difficult.
+                    # And I just want Python to shout at me loudly and excitedly when this happens.
+                    if num < -0x80000000 or num > 0x7FFFFFFF:
+                        raise RuntimeError(f"The padding bits on the integer literal at {offset:04X} aren't 0?!?!")
+                    if (num & 0x3FF) != 0:
+                        raise RuntimeError(f"Fractional number found at {offset:04X}?!?!")
                     expr_stack.append((offset, IntLiteralNode(num)))
                     return offset + 2 + i
                 case 0xF1:
@@ -329,7 +402,7 @@ def print_cmd(file, offset, expr_stack, stmt_list):
                         expr_stack.append((offset, StringLiteralNode(get_string(str1_id))))
                     return offset + 6
                 case _:
-                    raise RuntimeError(f'unimplemented command 0D {subcmd:02X}')
+                    raise RuntimeError(f'unimplemented command 0D {subcmd:02X} at offset {offset:04X}')
         case 0x0F:
             rhs = expr_stack.pop()
             lhs = expr_stack.pop()
@@ -369,6 +442,11 @@ def print_cmd(file, offset, expr_stack, stmt_list):
             rhs = expr_stack.pop()
             lhs = expr_stack.pop()
             expr_stack.append((lhs[0], Cmd1DNode(lhs[1], rhs[1])))
+            return offset + 1
+        case 0x1E:
+            rhs = expr_stack.pop()
+            lhs = expr_stack.pop()
+            expr_stack.append((lhs[0], Cmd1ENode(lhs[1], rhs[1])))
             return offset + 1
         case 0x1F:
             rhs = expr_stack.pop()
@@ -436,11 +514,12 @@ def print_cmd(file, offset, expr_stack, stmt_list):
             (branch_offset,) = struct.unpack_from('<h', buffer=file, offset=offset+1)
             stmt_list.append((offset, GotoStatement(offset + 3 + branch_offset)))
             return offset + 3
-        case 0x36:
-            (branch_offset,) = struct.unpack_from('<h', buffer=file, offset=offset+1)
-            cond = expr_stack.pop()
-            stmt_list.append((cond[0], TrueGotoStatement(cond[1], offset + 3 + branch_offset)))
-            return offset + 3
+        # Haven't seen this get used yet
+        # case 0x36:
+        #     (branch_offset,) = struct.unpack_from('<h', buffer=file, offset=offset+1)
+        #     cond = expr_stack.pop()
+        #     stmt_list.append((cond[0], TrueGotoStatement(cond[1], offset + 3 + branch_offset)))
+        #     return offset + 3
         case 0x37:
             (branch_offset,) = struct.unpack_from('<h', buffer=file, offset=offset+1)
             cond = expr_stack.pop()
@@ -450,7 +529,7 @@ def print_cmd(file, offset, expr_stack, stmt_list):
             stmt_list.append((offset, EndOfFileStatement()))
             return offset + 1
         case _:
-            raise RuntimeError(f'unimplemented command {cmd:02X}')
+            raise RuntimeError(f'unimplemented command {cmd:02X} at offset {offset:04X}')
     raise RuntimeError('I forgot a return statement somewhere')
 
 def get_string(id):
@@ -461,7 +540,7 @@ def get_string(id):
     return fsb[string_addr:string_end_addr].decode('mskanji')
 
 fsb = None
-with open('../999_files/root/scr/b12.fsb', 'rb') as f:
+with open('../999_files/root/scr/b32.fsb', 'rb') as f:
     fsb = f.read()
 
 assert fsb[0:3] == b'SIR'
@@ -478,7 +557,7 @@ script_header_offset = int.from_bytes(fsb[4:4+ptr_size], byteorder='little')
 # ptr_metadata_offset = int.from_bytes(fsb[4+ptr_size:4+ptr_size*2], byteorder='little')
 
 (filename_offset, entrypoint_dict_offset, str_count, str_table_offset, \
-    label_table_offset, unk_offset) \
+    label_table_offset, variable_table_offset) \
     = struct.unpack_from('<LLLLLL', buffer=fsb, offset=script_header_offset)
 
 # The filename is null-terminated
@@ -560,15 +639,15 @@ with open(filename, 'w', encoding='utf-8') as f:
     del statements_iter
     del i
     
-    for (i, block) in enumerate(blocks):
-        print('BLOCK', i)
-        print(block)
+    # for (i, block) in enumerate(blocks):
+    #     print('BLOCK', i)
+    #     print(block)
     
-    raise RuntimeError("We got this far")
+    # raise RuntimeError("We got this far")
     
-    for statement in statements:
-        func_name = entrypoints.get(statement[0])
+    for (addr, statement) in statements.items():
+        func_name = entrypoints.get(addr)
         if func_name is not None:
             f.write(f'function {func_name}:\n')
-        f.write(f'\t/* 0x{statement[0]:04X} */ {str(statement[1])}\n')
+        f.write(f'\t/* 0x{addr:04X} */ {str(statement)}\n')
     f.write('// There should be an "EOF" comment immediately before this comment')
