@@ -26,6 +26,17 @@ class StringLiteralNode:
     def __str__(self):
         # TODO: escape "s in the middle
         return f'"{self.value}"'
+    def __repr__(self):
+        return f'StringLiteralNode({repr(self.value)})'
+
+class EvalNode:
+    def __init__(self, in_node, field):
+        self.in_node = in_node
+        self.field = field
+    def __str__(self):
+        return f'*({self.in_node}).{self.field}'
+    def __repr__(self):
+        return f'EvalNode({repr(self.in_node)}, {repr(self.field)})'
 
 class FunctionNameNode:
     ns: str
@@ -35,9 +46,20 @@ class FunctionNameNode:
         self.func = func
     def __str__(self):
         if self.ns is not None:
-            return f"{self.ns}.{self.func}"
+            ns = self.ns
+            func = self.func
+            if '.' in ns:
+                ns = f'"{ns}"'
+            if '.' in func:
+                func = f'"{func}"'
+            return f"{ns}.{func}"
         else:
-            return str(self.func)
+            func = self.func
+            if '.' in func:
+                func = f'"{func}"'
+            return func
+    def __repr__(self):
+        return f'FunctionNameNode({repr(self.ns)}, {repr(self.func)})'
 class FunctionArgsNode:
     def __init__(self, children):
         self.children = children
@@ -64,6 +86,9 @@ class FunctionCallNode:
 
 class IntExprNode:
     pass
+
+class StrExprNode:
+    pass
     
 class NegateNode(IntExprNode):
     def __init__(self, expr: IntExprNode):
@@ -81,6 +106,23 @@ class LogicalNotNode(BooleanExprNode):
         self.expr = expr
     def __str__(self):
         return f"not {self.expr}"
+
+class PostIncrementNode(IntExprNode):
+    def __init__(self, expr: IntExprNode):
+        super().__init__()
+        self.expr = expr
+    def __str__(self):
+        return f'({self.expr})++'
+
+class Cmd0CNode(StrExprNode):
+    def __init__(self, array, index: IntExprNode):
+        super().__init__()
+        self.array = array
+        self.index = index
+    def __str__(self):
+        return f'{self.array}[{self.index}]'
+    def __repr__(self):
+        return f'Cmd0CNode({repr(self.array)}, {repr(self.index)})'
 
 class Cmd0FNode(BooleanExprNode):
     def __init__(self, lhs: BooleanExprNode, rhs: BooleanExprNode):
@@ -156,6 +198,8 @@ class Cmd15Node:
         self.rhs = rhs
     def __str__(self):
         return f'({self.lhs} + {self.rhs})'
+    def __repr__(self):
+        return f'Cmd15Node({repr(self.lhs)}, {repr(self.rhs)})'
 
 class Cmd16Node:
     def __init__(self, lhs, rhs):
@@ -163,6 +207,21 @@ class Cmd16Node:
         self.rhs = rhs
     def __str__(self):
         return f'({self.lhs} - {self.rhs})'
+        
+class Cmd18Node:
+    def __init__(self, lhs, rhs):
+        self.lhs = lhs
+        self.rhs = rhs
+    def __str__(self):
+        return f'({self.lhs} / {self.rhs})'
+
+class Cmd19Node(IntExprNode):
+    def __init__(self, lhs: IntExprNode, rhs: IntExprNode):
+        super().__init__()
+        self.lhs = lhs
+        self.rhs = rhs
+    def __str__(self):
+        return f'({self.lhs} % {self.rhs})'
 
 class Cmd20Node:
     def __init__(self, lhs, rhs):
@@ -364,10 +423,20 @@ def print_cmd(file, offset, expr_stack, stmt_list):
             node = LogicalNotNode(expr_stack[-1][1])
             expr_stack[-1] = (expr_stack[-1][0], node)
             return offset + 1
+        case 0x0A:
+            node = PostIncrementNode(expr_stack[-1][1])
+            expr_stack[-1] = (expr_stack[-1][0], node)
+            return offset + 1
+        case 0x0C:
+            index = expr_stack.pop()
+            array = expr_stack.pop()
+            expr_stack.append((array[0], Cmd0CNode(array[1], index[1])))
+            return offset + 1
         case 0x0D:
             subcmd = file[offset+1]
             match subcmd:
                 case 0xF0:
+                    # Type 0: int? fixed-point?
                     i = 0
                     num = 0
                     while (file[offset+2+i] & 0x80) != 0 and i < 4:
@@ -390,16 +459,29 @@ def print_cmd(file, offset, expr_stack, stmt_list):
                     expr_stack.append((offset, IntLiteralNode(num)))
                     return offset + 2 + i
                 case 0xF1:
-                    # TODO: Why would this be used instead of 0xF4? Specifically for `?System` functions?
+                    # TODO: type 1: System function identifier?
                     str_id = file[offset+2] | (file[offset+3] << 8)
                     expr_stack.append((offset, FunctionNameNode(None, get_string(str_id))))
                     return offset + 4
+                case 0xF2:
+                    # TODO: type 2: ??? haven't seen this used
+                    str_id = file[offset+2] | (file[offset+3] << 8)
+                    expr_stack.append((offset, FunctionNameNode(None, get_string(str_id))))
+                    # return offset + 4
+                    raise RuntimeError(f'Type 2 object with ID {str_id} ("{get_string(str_id)}") at offset {offset}')
                 case 0xF4:
                     (str1_id, str2_id) = struct.unpack_from('<HH', buffer=file, offset=offset+2)
-                    if str2_id != 0:
-                        expr_stack.append((offset, FunctionNameNode(get_string(str1_id), get_string(str2_id))))
+                    str1 = get_string(str1_id)
+                    str2 = get_string(str2_id)
+                    if str1 == '?_eval_':
+                        # It doesn't push to the stack!! Why!!
+                        node = EvalNode(expr_stack[-1][1], str2)
+                        expr_stack[-1] = (expr_stack[-1][0], node)
                     else:
-                        expr_stack.append((offset, StringLiteralNode(get_string(str1_id))))
+                        if str2:
+                            expr_stack.append((offset, FunctionNameNode(str1, str2)))
+                        else:
+                            expr_stack.append((offset, StringLiteralNode(str1)))
                     return offset + 6
                 case _:
                     raise RuntimeError(f'unimplemented command 0D {subcmd:02X} at offset {offset:04X}')
@@ -422,6 +504,16 @@ def print_cmd(file, offset, expr_stack, stmt_list):
             rhs = expr_stack.pop()
             lhs = expr_stack.pop()
             expr_stack.append((lhs[0], Cmd16Node(lhs[1], rhs[1])))
+            return offset + 1
+        case 0x18:
+            rhs = expr_stack.pop()
+            lhs = expr_stack.pop()
+            expr_stack.append((lhs[0], Cmd18Node(lhs[1], rhs[1])))
+            return offset + 1
+        case 0x19:
+            rhs = expr_stack.pop()
+            lhs = expr_stack.pop()
+            expr_stack.append((lhs[0], Cmd19Node(lhs[1], rhs[1])))
             return offset + 1
         case 0x1A:
             rhs = expr_stack.pop()
@@ -514,12 +606,11 @@ def print_cmd(file, offset, expr_stack, stmt_list):
             (branch_offset,) = struct.unpack_from('<h', buffer=file, offset=offset+1)
             stmt_list.append((offset, GotoStatement(offset + 3 + branch_offset)))
             return offset + 3
-        # Haven't seen this get used yet
-        # case 0x36:
-        #     (branch_offset,) = struct.unpack_from('<h', buffer=file, offset=offset+1)
-        #     cond = expr_stack.pop()
-        #     stmt_list.append((cond[0], TrueGotoStatement(cond[1], offset + 3 + branch_offset)))
-        #     return offset + 3
+        case 0x36:
+            (branch_offset,) = struct.unpack_from('<h', buffer=file, offset=offset+1)
+            cond = expr_stack.pop()
+            stmt_list.append((cond[0], TrueGotoStatement(cond[1], offset + 3 + branch_offset)))
+            return offset + 3
         case 0x37:
             (branch_offset,) = struct.unpack_from('<h', buffer=file, offset=offset+1)
             cond = expr_stack.pop()
@@ -540,7 +631,7 @@ def get_string(id):
     return fsb[string_addr:string_end_addr].decode('mskanji')
 
 fsb = None
-with open('../999_files/root/scr/b32.fsb', 'rb') as f:
+with open('../999_jp_files/root/bg/minigame/a01_suitcase/action.fsb', 'rb') as f:
     fsb = f.read()
 
 assert fsb[0:3] == b'SIR'
@@ -586,64 +677,68 @@ with open(filename, 'w', encoding='utf-8') as f:
     expressions = []
     while len(statements) == 0 or not isinstance(statements[-1][1], EndOfFileStatement):
         addr = print_cmd(fsb, addr, expressions, statements)
-    assert len(expressions) == 0
+    # assert len(expressions) == 0
+    if len(expressions) != 0:
+        print("Expression stack not empty:", str(expressions))
     
-    
-    # Get the list of all the places where a node of the CFG starts
-    leaders = set(entrypoints)
-    for (i, (addr, stmt)) in enumerate(statements):
-        if stmt.is_branch():
-            leaders.add(stmt.branch_offset)
-            # The fallthrough to the next statement after a conditional branch also begins a node
-            if stmt.is_conditional_branch():
-                leaders.add(statements[i + 1][0])
-    leaders = list(leaders)
-    leaders.sort()
-    
-    # print(leaders)
-    # raise RuntimeError("that's all the leaders")
-
-    statements = dict(statements)
-    
-    # Create and populate blocks (control flow graph nodes) with statements
-    blocks = []
-    i = 0
-    statements_iter = iter(statements.items())
-    addr, stmt = next(statements_iter)
-    for i in range(len(leaders)):
-        block = Block()
-        assert addr == leaders[i]
-        while (i != len(leaders) - 1 and addr < leaders[i + 1]) or \
-              (i == len(leaders) - 1 and not isinstance(stmt, EndOfFileStatement)):
-            block.append(stmt)
-            addr, stmt = next(statements_iter)
-        # Add references to other blocks
-        last_stmt = block.statements[-1]
-        # Add fallthrough reference for blocks that end with normal statements and conditional branches
-        if (last_stmt.is_branch() and last_stmt.is_conditional_branch()) or \
-           (not last_stmt.is_branch() and not isinstance(last_stmt, EndStatementNode)):
-            block.fallthrough_target = i + 1
-            assert 0 <= block.fallthrough_target < len(leaders)
-        if last_stmt.is_branch():
-            block.branch_target = bisect.bisect_left(leaders, last_stmt.branch_offset)
-            assert leaders[block.branch_target] == last_stmt.branch_offset
-        blocks.append(block)
+    if False:
+        # Get the list of all the places where a node of the CFG starts
+        leaders = set(entrypoints)
+        for (i, (addr, stmt)) in enumerate(statements):
+            if stmt.is_branch():
+                leaders.add(stmt.branch_offset)
+                # The fallthrough to the next statement after a conditional branch also begins a node
+                if stmt.is_conditional_branch():
+                    leaders.add(statements[i + 1][0])
+        leaders = list(leaders)
+        leaders.sort()
         
-        # DEBUG
-        # print(f'BLOCK {i} (from addr {addr:04X})')
-        # print(block)
-        # input()
-        # END DEBUG
-    del addr
-    del stmt
-    del statements_iter
-    del i
-    
-    # for (i, block) in enumerate(blocks):
-    #     print('BLOCK', i)
-    #     print(block)
-    
-    # raise RuntimeError("We got this far")
+        # print(leaders)
+        # raise RuntimeError("that's all the leaders")
+
+        statements = dict(statements)
+        
+        # Create and populate blocks (control flow graph nodes) with statements
+        blocks = []
+        i = 0
+        statements_iter = iter(statements.items())
+        addr, stmt = next(statements_iter)
+        for i in range(len(leaders)):
+            block = Block()
+            assert addr == leaders[i]
+            while (i != len(leaders) - 1 and addr < leaders[i + 1]) or \
+                  (i == len(leaders) - 1 and not isinstance(stmt, EndOfFileStatement)):
+                block.append(stmt)
+                addr, stmt = next(statements_iter)
+            # Add references to other blocks
+            last_stmt = block.statements[-1]
+            # Add fallthrough reference for blocks that end with normal statements and conditional branches
+            if (last_stmt.is_branch() and last_stmt.is_conditional_branch()) or \
+               (not last_stmt.is_branch() and not isinstance(last_stmt, EndStatementNode)):
+                block.fallthrough_target = i + 1
+                assert 0 <= block.fallthrough_target < len(leaders)
+            if last_stmt.is_branch():
+                block.branch_target = bisect.bisect_left(leaders, last_stmt.branch_offset)
+                assert leaders[block.branch_target] == last_stmt.branch_offset
+            blocks.append(block)
+            
+            # DEBUG
+            # print(f'BLOCK {i} (from addr {addr:04X})')
+            # print(block)
+            # input()
+            # END DEBUG
+        del addr
+        del stmt
+        del statements_iter
+        del i
+        
+        # for (i, block) in enumerate(blocks):
+        #     print('BLOCK', i)
+        #     print(block)
+        
+        # raise RuntimeError("We got this far")
+    else:
+        statements = dict(statements)
     
     for (addr, statement) in statements.items():
         func_name = entrypoints.get(addr)
